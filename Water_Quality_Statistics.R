@@ -61,7 +61,7 @@ for (element in element_columns) {
   
   # If the element has enough variation, run Pairwise Wilcoxon test
   if (length(unique_vals) > 1) {
-    pairwise_test <- pairwise.wilcox.test(df[[element]], df$Concentration, p.adjust.method = "none", exact = FALSE)
+    pairwise_test <- pairwise.wilcox.test(df[[element]], df$Concentration, p.adjust.method = "BH", exact = FALSE)
     
     # Write Pairwise Wilcoxon test results
     writeData(wb, element, "Pairwise Wilcox-test", startRow = 6, startCol = 1)
