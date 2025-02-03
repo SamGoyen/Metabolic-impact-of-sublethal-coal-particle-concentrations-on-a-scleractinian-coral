@@ -1,0 +1,360 @@
+---
+title: "Coal_experiment"
+output: html_notebook
+---
+
+load all required packages
+```{r}
+library(tidyverse)
+library(ggpubr)
+library(ggplot2)
+library(rstatix)
+library(plyr)
+library(car)
+library(scales)
+library(FactoMineR)
+library(factoextra)
+set.seed(123)
+```
+
+load helper function to calculate SE
+```{r}
+# Helper function to calculate SE
+summarySE <- function(data=NULL, measurevar, groupvars=NULL, na.rm=FALSE,
+                      conf.interval=.95, .drop=TRUE) {
+ 
+  # New version of length which can handle NA's: if na.rm==T, don't count them
+  length2 <- function (x, na.rm=FALSE) {
+    if (na.rm) sum(!is.na(x))
+    else       length(x)
+  }
+  
+  # This does the summary. For each group's data frame, return a vector with
+  # N, mean, and sd
+  datac <- ddply(data, groupvars, .drop=.drop,
+                 .fun = function(xx, col) {
+                   c(N    = length2(xx[[col]], na.rm=na.rm),
+                     mean = mean   (xx[[col]], na.rm=na.rm),
+                     sd   = sd     (xx[[col]], na.rm=na.rm)
+                   )
+                 },
+                 measurevar
+  )
+  
+  # Rename the "mean" column    
+  datac <- rename(datac, c("mean" = measurevar))
+  
+  datac$se <- datac$sd / sqrt(datac$N)  
+  # Calculate standard error of the mean
+  # Confidence interval multiplier for standard error
+  # Calculate t-statistic for confidence interval: 
+  # e.g., if conf.interval is .95, use .975 (above/below), and use df=N-1
+  ciMult <- qt(conf.interval/2 + .5, datac$N-1)
+  datac$ci <- datac$se * ciMult
+  
+  return(datac)
+}
+```
+
+
+1. PAM 
+```{r}
+# load the data
+HC_PAM <- read.csv("HC_PAM_full.csv")
+
+# Reorder the dataset
+HC_PAM$time <- ordered(HC_PAM$time,levels = c("T0", "T2", "T4", "T5", "T7", "T8", "T9", "T11", "T16", "T18", "T20", "T23", "T26", "T28", "T30", "T34", "T37", "T39"))
+
+# Calculate standard errors (summarySE provides the standard deviation, standard error of the mean, and a (default 95%) confidence interval)
+HC_PAM_SE <- summarySE(HC_PAM, measurevar="data", groupvars=c("tank","time"))
+HC_PAM_SE
+
+# Line plots
+SE <- ggplot(HC_PAM_SE, aes(x=time, y=data, group=tank, color=tank)) + 
+      geom_line()+
+      geom_pointrange(aes(ymin=data-se, ymax=data+se))
+SE + scale_y_continuous(expand = c(0, 0), limits = c(0, 800))
+
+# graph mid and end values only
+HC_PAM_end <- read.csv("HC_PAM.csv")
+
+HC_PAM_end_SE <- summarySE(HC_PAM_end, measurevar="data", groupvars=c("concentration", "time"))
+HC_PAM_end_SE
+
+# Line plots
+SE <- ggplot(HC_PAM_end_SE, aes(x=concentration, y=data, group=time, color=time)) + 
+            geom_line()+
+            geom_pointrange(aes(ymin=data-se, ymax=data+se))+
+            scale_x_log10(breaks = trans_breaks("log10", function(x) 10^x),
+            labels = trans_format("log10", math_format(10^.x)))
+
+SE + scale_y_continuous(expand = c(0, 0), limits = c(0, 0.8)) + annotation_logticks()
+```
+
+  
+```{r}
+# Repeated-measure ANOVA
+
+#==================
+# Check assumptions
+#==================
+
+# Outliers
+HC_PAM %>%
+  group_by(tank, time) %>%
+  identify_outliers(data)
+
+# Normality
+HC_PAM %>%
+  group_by(tank, time) %>%
+  shapiro_test(data)
+# data were mostly normally distributed at each time point (p > 0.05)
+ggqqplot(HC_PAM, "data", ggtheme = theme_bw()) +
+  facet_grid(time ~ tank, labeller = "label_both")
+# From the plots: if all the points fall along the reference line, it confirms that data are normaly distributed.
+
+#======================
+# Compute the main test
+#======================
+
+res.aov <- anova_test(
+  data = HC_PAM, dv = data, wid = id, within = c(tank, time))
+
+write.csv(res.aov, "ANOVA.csv")
+#============================
+# (1) Simple Main effect test
+#============================
+# This will test the effect of the treatment at each time point
+one.way <- HC_PAM %>%
+  group_by(time) %>%
+  anova_test(dv = data, wid = id, within = tank) %>%
+  get_anova_table() %>%
+  adjust_pvalue(method = "fdr")
+one.way
+
+write.csv(one.way, "SMET.csv")
+#==================================================
+# (2) Pairwise comparisons between treatment groups
+#==================================================
+pwc <- HC_PAM %>%
+  group_by(time) %>%
+  pairwise_t_test(
+    data ~ tank, paired = TRUE,
+    p.adjust.method = "fdr"
+  )
+pwc
+
+write.csv(pwc, "pwc.csv")
+```
+
+
+2. Gross photosynthesis
+```{r}
+# load the data
+HC_photosynthesis <- read.csv("HC_Gphotosynthesis.csv")
+
+# Calculate standard errors (summarySE provides the standard deviation, standard error of the mean, and a (default 95%) confidence interval)
+HC_photosynthesis_SE <- summarySE(HC_photosynthesis, measurevar="data", groupvars=c("concentration", "time"))
+HC_photosynthesis_SE
+
+# Line plots
+SE <- ggplot(HC_photosynthesis_SE, aes(x=concentration, y=data, group=time, color=time)) + 
+             geom_line()+
+             geom_pointrange(aes(ymin=data-se, ymax=data+se))
+SE + scale_y_continuous(expand = c(0, 0), limits = c(0, 0.5))
+```
+
+```{r}
+# one-way ANOVA
+res.aov <- aov(data ~ tank, data = HC_photosynthesis)
+
+# ++++++++++++++++++++++++++++++
+# Check Assumptions
+# ++++++++++++++++++++++++++++++
+
+# 1. Homogeneity of variances
+plot(res.aov, 1)
+
+# Levene test: if p is larger than 0.05 then there is no evidence to suggest that the variance across groups is statistically significantly different. Therefore, we can assume the homogeneity of variances in the different treatment groups.
+leveneTest(data ~ tank, data = HC_photosynthesis)
+
+# 2. Normality
+plot(res.aov, 2)
+
+# Shapiro-Wilk test: if p is larger than 0.05 then normality is not violated
+aov_residuals <- residuals(object = res.aov )
+shapiro.test(x = aov_residuals )
+
+# +++++++++++++++++++++++++++++
+
+# Summary of ANOVA
+summary(res.aov)
+# PostHoc (TuckeyHSD)
+# diff: difference between means of the two groups
+# lwr, upr: the lower and the upper end point of the confidence interval at 95% (default)
+# p adj: p-value after adjustment for the multiple comparisons
+TukeyHSD(res.aov)
+
+# To capture the output
+summary = summary(res.aov)
+capture.output(summary, file="summaryANOVA.txt")
+
+summary.Tukey = TukeyHSD(res.aov)
+capture.output(summary.Tukey, file="summaryTukey.txt")
+```
+
+3. Water quality
+```{r}
+HC_water_quality <- read.csv("HC_water_quality.csv")
+
+# Data do not meet the assumptions of parametric tests. 
+# Kruskal-Wallis
+kruskal.test(data ~ tank, data = HC_water_quality)
+
+
+pairwise.wilcox.test(HC_water_quality$data, HC_water_quality$tank,
+                     p.adjust.method = "BH")
+```
+
+4. Molecules
+```{r}
+Compounds <- read.csv("HC_compounds.csv")
+# Reorder the dataset
+Compounds$treatment <- ordered(Compounds$treatment,levels = c("TE_0", "TE_4", "TE_100"))
+
+# Compute the analysis of variance
+res.aov <- aov(Lactitol ~ treatment, data = my_data)
+
+# ++++++++++++++++++++++++++++++
+# Check Assumptions
+# ++++++++++++++++++++++++++++++
+
+# 1. Homogeneity of variances
+plot(res.aov, 1)
+
+# Levene test: if p is larger than 0.05 then there is no evidence to suggest that the variance across groups is statistically significantly different. Therefore, we can assume the homogeneity of variances in the different treatment groups.
+leveneTest(Lactitol ~ treatment, data = my_data)
+
+# 2. Normality
+plot(res.aov, 2)
+
+# Shapiro-Wilk test: if p is larger than 0.05 then normality is not violated
+aov_residuals <- residuals(object = res.aov )
+shapiro.test(x = aov_residuals )
+
+# +++++++++++++++++++++++++++++
+
+# Summary of ANOVA
+summary(res.aov)
+# PostHoc (TuckeyHSD)
+# diff: difference between means of the two groups
+# lwr, upr: the lower and the upper end point of the confidence interval at 95% (default)
+# p adj: p-value after adjustment for the multiple comparisons
+TukeyHSD(res.aov)
+
+# To capture the output
+summary = summary(res.aov)
+capture.output(summary, file="summaryANOVA.txt")
+
+summary.Tukey = TukeyHSD(res.aov)
+capture.output(summary.Tukey, file="summaryTukey.txt")
+
+# Graph the results
+
+ggboxplot(Compounds, x = "compound", y = "data",
+          color = "treatment", palette = "jco")
+```
+
+5. Elementome
+```{r}
+HC_elementome <- read.csv("HC_elementome_algae.csv")
+
+# Data log(x+1) transformed
+# one-way ANOVA
+res.aov <- aov(data ~ tank, data = HC_elementome)
+
+# ++++++++++++++++++++++++++++++
+# Check Assumptions
+# ++++++++++++++++++++++++++++++
+
+# 1. Homogeneity of variances
+plot(res.aov, 1)
+
+# Levene test: if p is larger than 0.05 then there is no evidence to suggest that the variance across groups is statistically significantly different. Therefore, we can assume the homogeneity of variances in the different treatment groups.
+leveneTest(data ~ tank, data = HC_elementome)
+
+# 2. Normality
+plot(res.aov, 2)
+
+# Shapiro-Wilk test: if p is larger than 0.05 then normality is not violated
+aov_residuals <- residuals(object = res.aov )
+shapiro.test(x = aov_residuals )
+
+# +++++++++++++++++++++++++++++
+
+# Summary of ANOVA
+summary(res.aov)
+# PostHoc (TuckeyHSD)
+# diff: difference between means of the two groups
+# lwr, upr: the lower and the upper end point of the confidence interval at 95% (default)
+# p adj: p-value after adjustment for the multiple comparisons
+TukeyHSD(res.aov)
+
+# To capture the output
+summary = summary(res.aov)
+capture.output(summary, file="summaryANOVA.txt")
+
+summary.Tukey = TukeyHSD(res.aov)
+capture.output(summary.Tukey, file="summaryTukey.txt")
+
+# ++++++++++++++++++++++++++++
+# Graph the elements that are significantly different
+# Reorder the dataset
+HC_elementome$Treatment <- ordered(HC_elementome$Treatment,levels = c("Tank_7", "Tank_4", "Tank_1"))
+
+# Bar plots of means
+Bars <- ggbarplot(HC_elementome, x = "Treatment", y = "X238_U", 
+                 add = c("mean_se", "jitter"),
+                 width = 0.8,
+                 color = "black", fill = "Treatment", palette = c("white", "grey", "black"),
+                 position = position_dodge(0.8))
+# Set the y axis to range between 0 and 5 with no gap between the bar and the axis
+Bars + scale_y_continuous(expand = c(0, 0)) 
+
+# ++++++++++++++++++++++++++++
+# PCA
+HC_elementome <- read.csv("HC_elementome_algae_pca.csv")
+
+# Remove the columns that are not active (i.e. do not contain quantitative data)
+elem.pca <- PCA(HC_elementome[,1:21], graph = FALSE)
+
+fviz_pca_ind(elem.pca,
+             geom.ind = "point", # show points only (nbut not "text")
+             col.ind = HC_elementome$Group, # color by groups
+             palette = c("#00AFBB", "#E7B800", "#FC4E07"),
+             addEllipses = TRUE, # Concentration ellipses
+             legend.title = "Groups"
+)
+
+fviz_pca_biplot(elem.pca, 
+                col.ind = HC_elementome$Group, palette = "jco", 
+                addEllipses = FALSE, label = "var",
+                col.var = "black", repel = TRUE,
+                legend.title = "Species") 
+
+fviz_pca_biplot(elem.pca, 
+                # Individuals
+                geom.ind = "point",
+                fill.ind = HC_elementome$Group, col.ind = "black",
+                pointshape = 21, pointsize = 2,
+                palette = "jco",
+                addEllipses = FALSE,
+                # Variables
+                alpha.var ="contrib", col.var = "contrib",
+                gradient.cols = "RdYlBu",
+                
+                legend.title = list(fill = "Group", color = "Contrib",
+                                    alpha = "Contrib")
+)
+```
+
